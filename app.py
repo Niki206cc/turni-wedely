@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, flash, redirect, render_template, request, url_for
 from playwright.sync_api import sync_playwright
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 TZ = ZoneInfo("Europe/Rome")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,14 +117,85 @@ def login(page, cfg):
         raise RuntimeError("Login Wedely non riuscito: controlla username e password")
 
 
+def has_shift_controls(scope):
+    try:
+        text = scope.locator("body").inner_text(timeout=3000)
+        if any(center.lower() in text.lower() for center in CENTERS):
+            return True
+        for select in scope.locator("select").all():
+            options = " ".join(select.locator("option").all_text_contents()).lower()
+            if "luxembourg center" in options or "luxembourg south" in options:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def open_shifts(page):
-    if not click_text(page, "WeDrivers", exact=True):
-        click_text(page, "WeDrivers")
-    page.wait_for_timeout(800)
-    if not click_text(page, "WeDrivers Shifts"):
-        raise RuntimeError("Voce 'WeDrivers Shifts' non trovata")
-    page.wait_for_load_state("domcontentloaded", timeout=30000)
-    page.wait_for_timeout(1200)
+    # La pagina può essere già aperta dopo il login.
+    scopes = [page] + list(page.frames)
+    for scope in scopes:
+        if has_shift_controls(scope):
+            return scope
+
+    # Espande il gruppo laterale WeDrivers, anche se il menu è compresso.
+    for scope in scopes:
+        for pattern in (r"We\s*Drivers", r"WeDrivers"):
+            try:
+                item = scope.get_by_text(re.compile(pattern, re.I))
+                if item.count():
+                    item.first.click(timeout=4000)
+                    page.wait_for_timeout(700)
+                    break
+            except Exception:
+                pass
+
+    # Cerca sia per testo sia nell'href; gestisce singolare/plurale e spazi.
+    shift_rx = re.compile(r"We\s*Drivers?\s*Shifts?|Drivers?\s*Shifts?|Shifts?", re.I)
+    for scope in [page] + list(page.frames):
+        candidates = [
+            scope.get_by_text(shift_rx),
+            scope.get_by_role("link", name=shift_rx),
+            scope.locator('a[href*="shift" i], a[href*="driver" i]'),
+            scope.locator('[data-url*="shift" i], [onclick*="shift" i]'),
+        ]
+        for locator in candidates:
+            try:
+                for i in range(min(locator.count(), 20)):
+                    element = locator.nth(i)
+                    if not element.is_visible():
+                        continue
+                    element.click(timeout=5000)
+                    page.wait_for_timeout(1300)
+                    for candidate_scope in [page] + list(page.frames):
+                        if has_shift_controls(candidate_scope):
+                            return candidate_scope
+            except Exception:
+                continue
+
+    # Ultimo tentativo: apre direttamente un link "shift" trovato nel DOM.
+    for scope in [page] + list(page.frames):
+        try:
+            hrefs = scope.locator('a[href*="shift" i]').evaluate_all(
+                "els => els.map(e => e.href).filter(Boolean)"
+            )
+            for href in hrefs:
+                page.goto(href, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1000)
+                if has_shift_controls(page):
+                    return page
+        except Exception:
+            pass
+
+    try:
+        visible = page.locator("a:visible, button:visible").all_text_contents()
+        diagnostic = " | ".join(x.strip() for x in visible if x.strip())[:600]
+    except Exception:
+        diagnostic = "nessuna voce leggibile"
+    raise RuntimeError(
+        "Pagina 'WeDrivers Shifts' non trovata. "
+        f"Voci visibili: {diagnostic}. Screenshot: /app/data/debug-last.png"
+    )
 
 
 def choose_value(page, wanted):
@@ -252,25 +323,28 @@ def scrape(start_day, end_day, login_only=False):
             login(page, cfg)
             if login_only:
                 return result
-            open_shifts(page)
+            shifts_scope = open_shifts(page)
             for center in CENTERS:
-                if not choose_value(page, center):
+                if not choose_value(shifts_scope, center):
                     raise RuntimeError(f"Sede non trovata: {center}")
                 page.wait_for_timeout(600)
-                if not choose_value(page, cfg["employee_name"]):
+                if not choose_value(shifts_scope, cfg["employee_name"]):
                     # Alcuni campi richiedono digitazione.
-                    search = page.locator('input[role="combobox"], input[type="search"]').last
+                    search = shifts_scope.locator('input[role="combobox"], input[type="search"]').last
                     if search.count():
                         search.fill(cfg["employee_name"])
                         page.wait_for_timeout(600)
-                        click_text(page, cfg["employee_name"], exact=True)
-                click_text(page, "Open", exact=True)
+                        click_text(shifts_scope, cfg["employee_name"], exact=True)
+                click_text(shifts_scope, "Open", exact=True)
                 page.wait_for_timeout(1200)
                 navigate_week(page, start_day)
-                result[center] = extract_employee_shifts(page, cfg["employee_name"], start_day, end_day)
+                result[center] = extract_employee_shifts(shifts_scope, cfg["employee_name"], start_day, end_day)
                 # Ritorna alla scelta senza dipendere da una URL specifica.
-                if not click_text(page, "Back"):
-                    open_shifts(page)
+                if not click_text(shifts_scope, "Back"):
+                    shifts_scope = open_shifts(page)
+                else:
+                    page.wait_for_timeout(700)
+                    shifts_scope = open_shifts(page)
             page.screenshot(path=str(DEBUG_FILE), full_page=True)
             return result
         except Exception:
