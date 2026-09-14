@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, flash, redirect, render_template, request, url_for
 from playwright.sync_api import sync_playwright
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 TZ = ZoneInfo("Europe/Rome")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -138,17 +138,51 @@ def open_shifts(page):
         if has_shift_controls(scope):
             return scope
 
-    # Espande il gruppo laterale WeDrivers, anche se il menu è compresso.
+    # Percorso principale: menu laterale WeDrivers -> WeDrivers Shifts.
     for scope in scopes:
-        for pattern in (r"We\s*Drivers", r"WeDrivers"):
+        parent_candidates = [
+            scope.get_by_text(re.compile(r"^\\s*WeDrivers\\s*$", re.I)),
+            scope.get_by_role("button", name=re.compile(r"^\\s*WeDrivers\\s*$", re.I)),
+            scope.get_by_role("link", name=re.compile(r"^\\s*WeDrivers\\s*$", re.I)),
+            scope.locator('aside a, aside button, nav a, nav button').filter(
+                has_text=re.compile(r"^\\s*WeDrivers\\s*$", re.I)
+            ),
+        ]
+        opened = False
+        for locator in parent_candidates:
             try:
-                item = scope.get_by_text(re.compile(pattern, re.I))
-                if item.count():
-                    item.first.click(timeout=4000)
-                    page.wait_for_timeout(700)
+                for i in range(locator.count()):
+                    item = locator.nth(i)
+                    if item.is_visible():
+                        item.click(timeout=5000)
+                        page.wait_for_timeout(800)
+                        opened = True
+                        break
+                if opened:
                     break
             except Exception:
-                pass
+                continue
+        if not opened:
+            continue
+
+        submenu_rx = re.compile(r"^\\s*WeDrivers?\\s+Shifts?\\s*$", re.I)
+        submenu_candidates = [
+            scope.get_by_text(submenu_rx),
+            scope.get_by_role("link", name=submenu_rx),
+            scope.locator('aside a, nav a, .sidebar a, .submenu a').filter(has_text=submenu_rx),
+        ]
+        for locator in submenu_candidates:
+            try:
+                for i in range(locator.count()):
+                    item = locator.nth(i)
+                    if item.is_visible():
+                        item.click(timeout=5000)
+                        page.wait_for_timeout(1300)
+                        for candidate_scope in [page] + list(page.frames):
+                            if has_shift_controls(candidate_scope):
+                                return candidate_scope
+            except Exception:
+                continue
 
     # Cerca sia per testo sia nell'href; gestisce singolare/plurale e spazi.
     shift_rx = re.compile(r"We\s*Drivers?\s*Shifts?|Drivers?\s*Shifts?|Shifts?", re.I)
