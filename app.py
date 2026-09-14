@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, flash, redirect, render_template, request, url_for
 from playwright.sync_api import sync_playwright
 
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 TZ = ZoneInfo("Europe/Rome")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -422,6 +422,18 @@ def extract_employee_shifts(page, employee, start_day, end_day):
     return sorted(set(found))
 
 
+def safe_screenshot(page):
+    try:
+        page.screenshot(
+            path=str(DEBUG_FILE),
+            full_page=False,
+            timeout=5000,
+            animations="disabled",
+        )
+    except Exception as exc:
+        log.warning("Screenshot diagnostico ignorato: %s", exc)
+
+
 def scrape(start_day, end_day, login_only=False):
     cfg = config()
     if not cfg["username"] or not cfg["password"]:
@@ -457,13 +469,10 @@ def scrape(start_day, end_day, login_only=False):
                 else:
                     page.wait_for_timeout(700)
                     shifts_scope = open_shifts(page)
-            page.screenshot(path=str(DEBUG_FILE), full_page=True)
+            safe_screenshot(page)
             return result
         except Exception:
-            try:
-                page.screenshot(path=str(DEBUG_FILE), full_page=True)
-            except Exception:
-                pass
+            safe_screenshot(page)
             raise
         finally:
             browser.close()
