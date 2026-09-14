@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Turni Wedely</title>
+  <style>
+    :root{--bg:#f3f6fb;--card:#fff;--ink:#172033;--muted:#687386;--blue:#2457e6;--green:#15803d;--red:#c62828;--border:#dce3ee}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:15px system-ui,-apple-system,Segoe UI,sans-serif}
+    header{background:#172b4d;color:#fff;padding:22px 5%} header h1{margin:0;font-size:25px} header small{opacity:.75}
+    main{max-width:1050px;margin:28px auto;padding:0 18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:22px;box-shadow:0 5px 20px #23395d10}
+    h2{font-size:18px;margin:0 0 18px}.status{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)}
+    label{display:block;font-weight:650;margin:13px 0 6px}input{width:100%;padding:11px;border:1px solid #bcc7d6;border-radius:8px;font:inherit}
+    .buttons{display:flex;gap:9px;flex-wrap:wrap;margin-top:18px}button{border:0;border-radius:8px;padding:11px 15px;font-weight:700;cursor:pointer;background:var(--blue);color:#fff}
+    button.secondary{background:#e7ecf5;color:#26344d}button.green{background:var(--green)}pre{white-space:pre-wrap;background:#111827;color:#edf2f7;padding:18px;border-radius:10px;min-height:170px}
+    .flash{padding:12px 15px;border-radius:8px;margin-bottom:15px;background:#dcfce7;color:#166534}.flash.error{background:#fee2e2;color:#991b1b}
+    .errorbox{margin-top:14px;color:var(--red);font-weight:600}.wide{grid-column:1/-1}.hint{color:var(--muted);font-size:13px}.ok{color:var(--green)}.ko{color:var(--red)}
+    @media(max-width:760px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}}
+  </style>
+</head>
+<body>
+<header><h1>Turni Wedely</h1><small>Controllo automatico Luxembourg Center e South · v{{ version }}</small></header>
+<main>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+  {% endwith %}
+  <div class="grid">
+    <section class="card">
+      <h2>Stato</h2>
+      <div class="status"><span>Wedely</span><strong class="{{ 'ok' if state.login_ok else 'ko' }}">{{ 'Login OK' if state.login_ok else ('Errore' if state.login_ok is sameas false else 'Da verificare') }}</strong></div>
+      <div class="status"><span>WhatsApp</span><strong class="{{ 'ok' if state.waha_ok else 'ko' }}">{{ 'WAHA OK' if state.waha_ok else ('Errore' if state.waha_ok is sameas false else 'Da verificare') }}</strong></div>
+      <div class="status"><span>Ultimo controllo</span><strong>{{ state.last_check or 'Mai' }}</strong></div>
+      <div class="status"><span>Ultimo WhatsApp</span><strong>{{ state.last_whatsapp or 'Mai' }}</strong></div>
+      <div class="status"><span>Destinatario</span><strong>{{ masked }}</strong></div>
+      {% if state.last_error %}<div class="errorbox">⚠ {{ state.last_error }}</div>{% endif %}
+      <div class="buttons">
+        <form method="post" action="/check"><button>Controlla ora</button></form>
+        <form method="post" action="/send-preview"><button class="green">Invia anteprima</button></form>
+      </div>
+      <p class="hint">Alle 21:00: lun-sab invia domani; domenica invia tutta la settimana successiva.</p>
+    </section>
+    <section class="card">
+      <h2>Configurazione</h2>
+      <form method="post" action="/save">
+        <label>Username Wedely</label><input name="username" value="{{ cfg.username }}" autocomplete="username" required>
+        <label>Password Wedely</label><input name="password" type="password" placeholder="{{ 'Salvata (lascia vuoto per mantenerla)' if cfg.password else 'Password' }}">
+        <label>Nome da cercare</label><input name="employee_name" value="{{ cfg.employee_name }}" required>
+        <label>URL WAHA</label><input name="waha_url" value="{{ cfg.waha_url }}" placeholder="http://waha:3000">
+        <label>API key WAHA</label><input name="waha_api_key" type="password" placeholder="{{ 'Salvata (lascia vuoto per mantenerla)' if cfg.waha_api_key else 'API key' }}">
+        <label>Sessione WAHA</label><input name="waha_session" value="{{ cfg.waha_session }}">
+        <label>Numero destinatario</label><input name="waha_number" value="{{ cfg.waha_number }}" placeholder="39XXXXXXXXXX">
+        <div class="buttons"><button>Salva</button></div>
+      </form>
+      <div class="buttons">
+        <form method="post" action="/test-login"><button class="secondary">Test login</button></form>
+        <form method="post" action="/test-whatsapp"><button class="secondary">Test WhatsApp</button></form>
+      </div>
+    </section>
+    <section class="card wide">
+      <h2>Anteprima messaggio</h2>
+      <pre>{{ state.preview or 'Esegui “Controlla ora” per visualizzare i turni.' }}</pre>
+    </section>
+  </div>
+</main>
+</body>
+</html>
