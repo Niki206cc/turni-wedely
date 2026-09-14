@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, flash, redirect, render_template, request, url_for
 from playwright.sync_api import sync_playwright
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 TZ = ZoneInfo("Europe/Rome")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -232,29 +232,107 @@ def open_shifts(page):
     )
 
 
+def normalize_label(value):
+    value = (value or "").casefold()
+    value = re.sub(r"[–—−-]+", " ", value)
+    return re.sub(r"\\s+", " ", value).strip()
+
+
+def wanted_aliases(wanted):
+    normalized = normalize_label(wanted)
+    aliases = [normalized]
+    if "luxembourg center" in normalized:
+        aliases += ["luxembourg center", "wemanagers luxembourg center"]
+    elif "luxembourg south" in normalized:
+        aliases += ["luxembourg south", "wemanagers luxembourg south"]
+    return aliases
+
+
+def label_matches(label, wanted):
+    normalized = normalize_label(label)
+    return any(alias in normalized or normalized in alias for alias in wanted_aliases(wanted))
+
+
 def choose_value(page, wanted):
-    # Prima prova i menu HTML nativi.
+    # Menu HTML nativo, compresi quelli nascosti da Bootstrap/Select2.
     for select in page.locator("select").all():
         try:
-            options = select.locator("option").all_text_contents()
-            match = next((x for x in options if wanted.lower() in x.strip().lower()), None)
-            if match:
-                select.select_option(label=match)
-                return True
+            options = select.locator("option")
+            for i in range(options.count()):
+                option = options.nth(i)
+                label = option.inner_text().strip()
+                if label_matches(label, wanted):
+                    value = option.get_attribute("value")
+                    if value is not None:
+                        select.select_option(value=value, force=True)
+                    else:
+                        select.select_option(index=i, force=True)
+                    select.evaluate("""el => {
+                        el.dispatchEvent(new Event('input', {bubbles:true}));
+                        el.dispatchEvent(new Event('change', {bubbles:true}));
+                    }""")
+                    page.wait_for_timeout(700)
+                    return True
         except Exception:
             pass
-    # Poi componenti grafici (Select2, dropdown Bootstrap, ecc.).
-    for control in page.locator('[role="combobox"], .select2-selection, .dropdown-toggle').all():
+
+    # Menu grafici usati da Bootstrap Select, Select2, Chosen e componenti simili.
+    controls = page.locator(
+        '.bootstrap-select button, button.dropdown-toggle, '
+        '.select2-selection, .chosen-single, [role="combobox"], '
+        '[aria-haspopup="listbox"], [aria-haspopup="true"]'
+    )
+    for i in range(controls.count()):
         try:
-            control.click(timeout=3000)
-            page.wait_for_timeout(300)
-            option = page.get_by_text(wanted, exact=True)
-            if option.count():
-                option.last.click(timeout=4000)
+            control = controls.nth(i)
+            if not control.is_visible():
+                continue
+            control.click(timeout=4000)
+            page.wait_for_timeout(400)
+            visible_options = page.locator(
+                '[role="option"]:visible, .dropdown-menu li:visible, '
+                '.select2-results__option:visible, .chosen-results li:visible, '
+                'a.dropdown-item:visible'
+            )
+            for j in range(visible_options.count()):
+                option = visible_options.nth(j)
+                if label_matches(option.inner_text(), wanted):
+                    option.click(timeout=5000)
+                    page.wait_for_timeout(700)
+                    return True
+            # Alcuni plugin non assegnano una classe alle righe del menu.
+            text_option = page.get_by_text(
+                re.compile(re.escape("Luxembourg Center" if "Center" in wanted else
+                                     "Luxembourg South" if "South" in wanted else wanted), re.I)
+            )
+            for j in range(text_option.count()):
+                option = text_option.nth(j)
+                if option.is_visible() and label_matches(option.inner_text(), wanted):
+                    option.click(timeout=5000)
+                    page.wait_for_timeout(700)
+                    return True
+            # Richiude il controllo se non era quello corretto.
+            try:
+                control.press("Escape")
+            except Exception:
+                pass
+        except Exception:
+            continue
+
+    # Ultimo tentativo su qualunque testo visibile corrispondente.
+    short = ("Luxembourg Center" if "Center" in wanted else
+             "Luxembourg South" if "South" in wanted else wanted)
+    candidates = page.get_by_text(re.compile(re.escape(short), re.I))
+    for i in range(candidates.count()):
+        try:
+            option = candidates.nth(i)
+            if option.is_visible() and label_matches(option.inner_text(), wanted):
+                option.click(timeout=5000)
+                page.wait_for_timeout(500)
                 return True
         except Exception:
             pass
-    return click_text(page, wanted, exact=True)
+    return False
 
 
 def navigate_week(page, target):
